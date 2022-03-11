@@ -5,9 +5,10 @@ using BenchmarkTools
 using LaTeXStrings, KernelDensity
 using Parameters, CSV, Statistics, Random, QuantEcon
 using NLsolve, Dierckx, Distributions, ArgParse
-using LinearAlgebra, QuadGK, Roots, Optim, Interpolations
+using LinearAlgebra, QuadGK, Roots, Optim, LinearInterpolations, Interpolations
 using Printf
 using Dierckx
+using DataFrames, Pandas
 include("time_series_fun.jl")
 
 function calibrate(r=0.03, alpha=0.33, l=0.33, delta=0.025, rhox=0.974, stdx=0.009)
@@ -69,7 +70,7 @@ end
     k_grid::T4 = range(k_l, stop=k_u, length =NK)
 end
 
-function update_params(self::Para, cal::NamedTuple)
+function update_params(self, cal)
     @unpack alpha, beta, delta, theta = cal
     self.alpha = alpha
     self.beta = beta
@@ -80,7 +81,6 @@ end
 
 
 function RHS_fun_cons(l_pol::Function, para::Para)
-    
     @unpack alpha, beta, delta, theta, P, NK, NS, k_grid, A = para
     # consumption given state and labor
     
@@ -126,7 +126,7 @@ function labor_supply_loss(l_i::Float64, k::Float64, z::Int64, RHS_fun::Function
 end
 
 
-function solve_model_time_iter(l::Array, para::Para; tol=1e-6, max_iter=1000, verbose=true, 
+function solve_model_time_iter(l, para::Para; tol=1e-6, max_iter=1000, verbose=true, 
                                 print_skip=25)
     # Set up loop 
     @unpack k_grid, NS, A, alpha, theta= para
@@ -141,7 +141,7 @@ function solve_model_time_iter(l::Array, para::Para; tol=1e-6, max_iter=1000, ve
     iter = 1
     while (iter < max_iter) && (err > tol)
         # interpolate given labor grid l
-        l_pol(k, z) = Spline1D(k_grid, l[:, z])(k)
+        l_pol(k, z) = Interpolate(k_grid, @view(l[:, z]), extrapolate=:reflect)(k)
         RHS_fun = RHS_fun_cons(l_pol, para)
         for (i, k) in enumerate(k_grid)
             for z in 1:NS
@@ -180,6 +180,7 @@ function solve_model_time_iter(l::Array, para::Para; tol=1e-6, max_iter=1000, ve
             y[i, z] = A[z]*k^alpha*l[i, z]^(1-alpha)
         end
     end
+
     inv = y - c
     w = (1-alpha).*y./l
     R = alpha.*y./k_grid
@@ -191,7 +192,7 @@ end
 function simulate_series(l_mat::Array, para::Para, burn_in=200, capT=10000)
 
     @unpack rhox, stdx, P, mc, A, alpha, theta, delta, k_grid = para
-    l_pol(k, z) = Spline1D(k_grid, l_mat[:, z])(k)
+    l_pol(k, z) = Interpolate(k_grid, @view(l_mat[:, z]), extrapolate=:reflect)(k)
     capT = capT + burn_in + 1
 
     # Extract indices of simualtes shocks
@@ -222,10 +223,9 @@ end
 
 function impulse_response(l_mat, para, k_init; irf_length=40, scale=1.0)
 
-    para = Para()
     @unpack rhox, stdx, P, mc, A, alpha, theta, delta, k_grid, NK, NS = para
 
-    # Bivariate interpolation
+    # Bivariate interpolation (AR(1) shocks, so productivity can go off grid)
     L = Spline2D(k_grid, A, l_mat)
 
     eta_x = zeros(irf_length)
@@ -258,7 +258,6 @@ function impulse_response(l_mat, para, k_init; irf_length=40, scale=1.0)
         w = (1-alpha).*y./l
         R = alpha.*y./k
         lab_prod = y./l
-        k =
         out = [c k l i w R y lab_prod]
         return out
     end
@@ -270,7 +269,7 @@ function impulse_response(l_mat, para, k_init; irf_length=40, scale=1.0)
     @. irf_res = 100*log(out_imp/out_bas)
     #out = [log.(x./mean(getfield(simul, field))) for (x, field) in
     #zip([c, k[1:(end-1)], l, i, w, R, y, lab_prod], [:c, :k, :l, :i, :w, :R, :y, :lab_prod])]
-c, k, l, i, w, R, y, lab_prod = [irf_res[:, i] for i in 1:size(irf_res, 2)]
+    c, k, l, i, w, R, y, lab_prod = [irf_res[:, i] for i in 1:size(irf_res, 2)]
 
     irf = (l=l, y=y, c=c, k=k, i=i, w=w, R=R,
                  lab_prod=lab_prod, eta_x=100*log.(z))
@@ -278,7 +277,7 @@ c, k, l, i, w, R, y, lab_prod = [irf_res[:, i] for i in 1:size(irf_res, 2)]
 end
 
 
-function residual(l_pol, simul::NamedTuple, para::Para; burn_in=200)
+function residual(l_pol, simul, para::Para; burn_in=200)
     capT = size(simul.c)[1]
     resids = zeros(capT)
     @unpack A, alpha, theta, P = para
@@ -295,23 +294,17 @@ function residual(l_pol, simul::NamedTuple, para::Para; burn_in=200)
 end  
    
 
-function main()
-    para = Para()
-    cal = calibrate()
-    update_params(para, cal)
-    @unpack NK, NS, A, k_grid, alpha = para
+para = Para()
+cal = calibrate()
+update_params(para, cal)
+@unpack NK, NS, A, k_grid, alpha = para
 
-    l = zeros(NK, NS)
-    c = zeros(NK, NS)
-    l .= 0.5
-    # iterate until policy function converges
-    @btime solve_model_time_iter($l, $para, verbose=false)
-    l_mat, l_pol, c, y, inv, w, R = solve_model_time_iter(l, para, verbose=false)
-    return para, cal, l_mat, l_pol, c, y, inv, w, R
-end
+l = zeros(NK, NS)
+c = zeros(NK, NS)
+l .= 0.5
+# iterate until policy function converges
+l_mat, l_pol, c, y, inv, w, R = solve_model_time_iter(l, para, verbose=false)
 
-" Main loop "
-para, cal, l_mat, l_pol, c, y, inv, w, R = main()
 
 " Solve for steady state "
 steady = steady_state(cal)
@@ -323,8 +316,7 @@ simul = simulate_series(l_mat, para)
 " Log deviations from stationary mean "
 out = [log.(getfield(simul, x)./mean(getfield(simul,x))) for x in keys(steady)]
 l, c, k, y, i, w, R, lab_prod = out
-simul_dat = DataFrame([l, c, k, y, i, w, R, lab_prod])
-DataFrames.rename!(simul_dat, [:l, :c, :k, :y, :i, :w, :R, :lab_prod])
+simul_dat = DataFrames.DataFrame(l=l, c=c, k=k, y=y, i=i, w=w, R=R, lab_prod=lab_prod)
 
 
 fig, ax = subplots(1, 3, figsize=(20, 5))
@@ -348,6 +340,10 @@ ax[3].legend()
 display(fig)
 PyPlot.savefig("simulations.pdf")
 
+" Residuals "
+res = residual(l_pol, simul, para)
+
+" Impulse responses "
 k_1 = mean(simul.k)
 irf = impulse_response(l_mat, para, k_1, irf_length=60)
 
@@ -372,6 +368,8 @@ display(fig)
 PyPlot.savefig("rbc_irf.pdf")
 
 " Moments from simulated data "
+# convert to Pandas DataFrame
+#simul_dat = Pandas.DataFrame(simul_dat)
 mom = moments(simul_dat)
       
 

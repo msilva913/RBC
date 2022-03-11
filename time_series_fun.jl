@@ -13,14 +13,15 @@ using QuantEcon
 
 using TexTables
 
-function moments(dat; lag =2, verbose=true)
-    sd = colwise(std, dat)
-    RSD = sd./sd[1]
-    corrs = [cor(dat[1], dat[i]) for i in 1:ncol(dat)]
-    ac = zeros(ncol(dat), lag)
+function moments(dat; lags =2, verbose=true)
+    sd = DataFrames.describe(dat, :std)
+    RSD = sd./DataFrames.select(sd, :y)
+    sd = sd.std
+    corrs = [cor(dat[:, i], dat.y) for i in 1:ncol(dat)]
+    ac = zeros(ncol(dat), lags)
 
-    for k in 2:(lag+1)
-        ac[:, k-1] = [autocor(dat[i])[k] for i in 1:ncol(dat)]
+    for k in 2:(lags+1)
+        ac[:, k-1] = [autocor(dat[:, i])[k] for i in 1:ncol(dat)]
     end
 
     mom = [names(dat) sd RSD corrs ac]
