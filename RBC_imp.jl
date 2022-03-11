@@ -85,7 +85,8 @@ function RHS_fun_cons(l_pol::Function, para::Para)
     # consumption given state and labor
     
     RHS = zeros(NK, NS)
-    for (i, k) in enumerate(k_grid)
+    @inbounds Threads.@threads for (i, k) in collect(enumerate(k_grid))
+    #for (i, k) in enumerate(k_grid)
         for z in 1:NS
             # labor policy
             l_i = l_pol(k, z)
@@ -113,7 +114,7 @@ function RHS_fun_cons(l_pol::Function, para::Para)
 end
 
 
-function labor_supply_loss(l_i::Float64, k::Float64, z::Int64, RHS_fun::Function,  para::Para)
+function labor_supply_loss(l_i, k, z, RHS_fun::Function,  para::Para)
     
     @unpack A, alpha, theta = para
     # convert domain from (0, infty) to (0, 1)
@@ -144,6 +145,7 @@ function solve_model_time_iter(l, para::Para; tol=1e-6, max_iter=1000, verbose=t
         l_pol(k, z) = Interpolate(k_grid, @view(l[:, z]), extrapolate=:reflect)(k)
         RHS_fun = RHS_fun_cons(l_pol, para)
         for (i, k) in enumerate(k_grid)
+        #@inbounds Threads.@threads for (i, k) in collect(enumerate(k_grid))
             for z in 1:NS
                 # solve for labor supply
                 #l_i = l_pol(k, z)
@@ -299,12 +301,11 @@ cal = calibrate()
 update_params(para, cal)
 @unpack NK, NS, A, k_grid, alpha = para
 
-l = zeros(NK, NS)
-c = zeros(NK, NS)
-l .= 0.5
+l = ones(NK, NS)*0.33
 # iterate until policy function converges
 l_mat, l_pol, c, y, inv, w, R = solve_model_time_iter(l, para, verbose=false)
-
+@code_warntype solve_model_time_iter(l, para)
+@btime solve_model_time_iter($l, $para)
 
 " Solve for steady state "
 steady = steady_state(cal)
