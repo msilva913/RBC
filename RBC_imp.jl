@@ -1,44 +1,42 @@
 
 using PyPlot
-using Plots
 using BenchmarkTools
 using LaTeXStrings, KernelDensity
 using Parameters, CSV, Statistics, Random, QuantEcon
-using NLsolve, Dierckx, Distributions, ArgParse
-using LinearAlgebra, QuadGK, Roots, Optim, LinearInterpolations, Interpolations
+using NLsolve, Dierckx
+using LinearAlgebra, QuadGK, Roots, LinearInterpolations, Interpolations
 using Printf
 using Dierckx
 using DataFrames, Pandas
 include("time_series_fun.jl")
 
-function calibrate(r=0.03, alpha=0.33, l=0.33, delta=0.025, rhox=0.974, stdx=0.009)
+function calibrate(r=0.03, α=0.33, l=0.33, δ=0.025, ρ_x=0.974, σ_x=0.009)
     " Convert r to quarterly "
     r_q = (1+r)^(1.0/4.0)-1.0
-    beta = 1/(1+r_q)
+    β = 1/(1+r_q)
     " Ratio of capital to labor supply "
-    k_l = (alpha/(1/beta-(1-delta)))^(1/(1-alpha))
+    k_l = (α/(1/β-(1-δ)))^(1/(1-α))
     " Solve for theta "
-    theta = ((1-l)/l*(1-alpha)*k_l^alpha)/(k_l^alpha-delta*k_l)
-    CalibratedParameters = (alpha=alpha, beta=beta, delta=delta, theta=theta,
-    rhox=rhox, stdx=stdx)
+    θ = ((1-l)/l*(1-α)*k_l^α)/(k_l^α-δ*k_l)
+    CalibratedParameters = (α=α, β=β, δ=δ, θ=θ, ρ_x=ρ_x, σ_x=σ_x)
     return CalibratedParameters
 end
 
 
 function steady_state(params)
-    @unpack alpha, beta, delta, theta, rhox, stdx = params
+    @unpack α, β, δ, θ, ρ_x, σ_x = params
     " capital-labor ratio "
-    k_l = (alpha/(1/beta-(1-delta)))^(1/(1-alpha))
+    k_l = (α/(1/β-(1-δ)))^(1/(1-α))
     " wage and rental rate "
-    w = (1-alpha)*k_l^alpha
-    R = alpha*k_l^(alpha-1)
+    w = (1-α)*k_l^α
+    R = α*k_l^(α-1)
     " consumption-labor ratio "
-    c_l = k_l^alpha-delta*k_l
+    c_l = k_l^α-δ*k_l
     " other variables "
-    l = ((1-alpha)/theta*k_l^(alpha-1))/((theta+1-alpha)/theta*k_l^(alpha-1)-delta)
+    l = ((1-α)/θ*k_l^(α-1))/((θ+1-α)/θ*k_l^(α-1)-δ)
     c = l*c_l
     k = k_l*l
-    y = k^alpha*l^(1-alpha)
+    y = k^α*l^(1-α)
     i = y-c
     lab_prod = y/l
 
@@ -49,12 +47,12 @@ end
 
 @with_kw mutable struct Para{T1, T2, T3, T4}
     # model parameters
-    alpha::Float64 = 0.33
-    beta::Float64 = 0.99
-    delta::Float64 = 0.025
-    theta::Float64 = 1.82
-    rhox::Float64 = 0.974
-    stdx::Float64 = 0.009
+    α::Float64 = 0.33
+    β::Float64 = 0.99
+    δ::Float64 = 0.025
+    θ::Float64 = 1.82
+    ρ_x::Float64 = 0.974
+    σ_x::Float64 = 0.009
 
     # numerical parameter
     k_l::Float64 = 5.0
@@ -64,24 +62,54 @@ end
     NK::Int64 = 50
     NS::Int64 = 20
     T::Float64 = 1e5
-    mc::T1 = rouwenhorst(NS, rhox, stdx, 0)
+    mc::T1 = rouwenhorst(NS, ρ_x, σ_x, 0)
     P::T2 = mc.p
     A::T3 = exp.(mc.state_values)
     k_grid::T4 = range(k_l, stop=k_u, length =NK)
 end
 
-function update_params(self, cal)
-    @unpack alpha, beta, delta, theta = cal
-    self.alpha = alpha
-    self.beta = beta
-    self.delta = delta
-    self.theta = theta
+function update_params!(self, cal)
+    @unpack α, β, δ, θ = cal
+    self.α = α
+    self.β = β
+    self.δ = δ
+    self.θ = θ
     nothing
 end
 
+# function RHS_cons(k, z, l_pol, para)
+#     # RHS of EE for given k_i, z
+#     @unpack α, β, δ, θ, P, NK, NS, k_grid, A = para
+#     # consumption given state and labor
+#     l_i = l_pol(k, z)
+#     y = A[z]*k^α*l_i^(1-α)
+#     c = (1-l_i)/θ*(1-α)*y/l_i
+#     #c = min(c, y)
+#     # update capital
+#     k_p = (1-δ)*k + A[z]*k^α*l_i^(1-α) - c
+#     RHS = 0.0
+#     for z_hat in 1:NS
+#         # update labor supply via interpolation
+#         l_p = l_pol(k_p, z_hat)
+#         # update consumption
+#         y_p = A[z_hat]*k_p^α*l_p^(1-α)
+#         c_p = (1-l_p)/θ*(1-α)*y_p/l_p
+#         #c_p = min(c_p, y_p)
+#         # future marginal utility
+#         RHS+= P[z, z_hat]*((1/c_p)*(α*y_p/k_p+1-δ))
+#     end
+#     return RHS
+# end
+
+# function rhs_fun(k, z, l_pol, para)
+#     @unpack α, β, δ, θ, P, NK, NS, k_grid, A = para
+#     RHS = [RHS_cons(k, z, l_pol, para) for k in k_grid]
+#     out = Interpolate(k_grid, RHS, extrapolate=:reflect)(k)
+#     return out
+# end
 
 function RHS_fun_cons(l_pol::Function, para::Para)
-    @unpack alpha, beta, delta, theta, P, NK, NS, k_grid, A = para
+    @unpack α, β, δ, θ, P, NK, NS, k_grid, A = para
     # consumption given state and labor
     
     RHS = zeros(NK, NS)
@@ -91,70 +119,69 @@ function RHS_fun_cons(l_pol::Function, para::Para)
             # labor policy
             l_i = l_pol(k, z)
             # consumption and output
-            y = A[z]*k^alpha*l_i^(1-alpha)
-            c = (1-l_i)/theta*(1-alpha)*y/l_i
+            y = A[z]*k^α*l_i^(1-α)
+            c = (1-l_i)/θ*(1-α)*y/l_i
             #c = min(c, y)
             # update capital
-            k_p = (1-delta)*k + A[z]*k^alpha*l_i^(1-alpha) - c
+            k_p = (1-δ)*k + A[z]*k^α*l_i^(1-α) - c
             for z_hat in 1:NS
                 # update labor supply via interpolation
                 l_p = l_pol(k_p, z_hat)
                 # update consumption
-                y_p = A[z_hat]*k_p^alpha*l_p^(1-alpha)
-                c_p = (1-l_p)/theta*(1-alpha)*y_p/l_p
+                y_p = A[z_hat]*k_p^α*l_p^(1-α)
+                c_p = (1-l_p)/θ*(1-α)*y_p/l_p
                 #c_p = min(c_p, y_p)
                 # future marginal utility
-                RHS[i, z] += P[z, z_hat]*((1/c_p)*(alpha*y_p/k_p+1-delta))
+                RHS[i, z] += P[z, z_hat]*((1/c_p)*(α*y_p/k_p+1-δ))
             end
         end
     end
-    RHS = (beta.*RHS)
+    RHS = (β.*RHS)
     rhs_fun(k, z) = LinearInterpolation(k_grid, RHS[:, z], extrapolation_bc=Line())(k)
     return rhs_fun
 end
 
 
-function labor_supply_loss(l_i, k, z, RHS_fun::Function,  para::Para)
+function labor_supply_loss(l_i, k, z, RHS_fun,  para::Para)
     
-    @unpack A, alpha, theta = para
+    @unpack A, α, θ = para
     # convert domain from (0, infty) to (0, 1)
     # optimal consumption
-    y = A[z]*k^alpha*l_i^(1-alpha)
-    c = (1-l_i)/theta*(1-alpha)*y/l_i
+    y = A[z]*k^α*l_i^(1-α)
+    c = (1-l_i)/θ*(1-α)*y/l_i
     #c = min(c, y)
     error =  1/c - RHS_fun(k, z)
     return error
 end
 
 
-function solve_model_time_iter(l, para::Para; tol=1e-6, max_iter=1000, verbose=true, 
+function solve_model_time_iter(l, para::Para; tol=1e-7, max_iter=1000, verbose=true, 
                                 print_skip=25)
     # Set up loop 
-    @unpack k_grid, NS, A, alpha, theta= para
+    @unpack k_grid, NS, A, α, θ= para
     # Initial consumption level
     c = similar(l)
     c_new = similar(l)
     for z in 1:NS
-        c[:, z] = A[z].*k_grid.^alpha.*l[:, z].^(1-alpha)
+        c[:, z] = A[z].*k_grid.^α.*l[:, z].^(1-α)
     end
 
     err = 1
     iter = 1
     while (iter < max_iter) && (err > tol)
         # interpolate given labor grid l
-        l_pol(k, z) = Interpolate(k_grid, @view(l[:, z]), extrapolate=:reflect)(k)
+        l_pol(k, z) = LinearInterpolation(k_grid, @view(l[:, z]), extrapolation_bc=Line())(k)
         RHS_fun = RHS_fun_cons(l_pol, para)
         for (i, k) in enumerate(k_grid)
         #@inbounds Threads.@threads for (i, k) in collect(enumerate(k_grid))
             for z in 1:NS
                 # solve for labor supply
-                #l_i = l_pol(k, z)
                 l_i = find_zero(l_i -> labor_supply_loss(l_i, k, z, RHS_fun, para), (1e-10, 0.99), Bisection() )
                 #l_i = abs(h_i)/(1+abs(h_i))
                 l[i, z] = l_i
                 # implied consumption
-                y = A[z]*k^alpha*l_i^(1-alpha)
-                c_new[i, z] = (1-l_i)/theta*(1-alpha)*y/l_i
+                y = A[z]*k^α*l_i^(1-α)
+                c_new[i, z] = (1-l_i)/θ*(1-α)*y/l_i
             end
         end
         #@printf(" %.2f", (mean(c)))
@@ -179,13 +206,13 @@ function solve_model_time_iter(l, para::Para; tol=1e-6, max_iter=1000, verbose=t
     inv = similar(c)
     for (i, k) in enumerate(k_grid)
         for z in 1:NS
-            y[i, z] = A[z]*k^alpha*l[i, z]^(1-alpha)
+            y[i, z] = A[z]*k^α*l[i, z]^(1-α)
         end
     end
 
     inv = y - c
-    w = (1-alpha).*y./l
-    R = alpha.*y./k_grid
+    w = (1-α).*y./l
+    R = α.*y./k_grid
     l_pol(k, z) = LinearInterpolation(k_grid, l[:, z], extrapolation_bc=Line())(k)
     return l, l_pol, c, y, inv, w, R
 end
@@ -193,7 +220,7 @@ end
 
 function simulate_series(l_mat::Array, para::Para, burn_in=200, capT=10000)
 
-    @unpack rhox, stdx, P, mc, A, alpha, theta, delta, k_grid = para
+    @unpack ρ_x, σ_x, P, mc, A, α, θ, δ, k_grid = para
     l_pol(k, z) = Interpolate(k_grid, @view(l_mat[:, z]), extrapolate=:reflect)(k)
     capT = capT + burn_in + 1
 
@@ -208,34 +235,35 @@ function simulate_series(l_mat::Array, para::Para, burn_in=200, capT=10000)
 
     for t in 1:capT
         l[t] = l_pol(k[t], z_indices[t])
-        y[t] = z_series[t]*k[t]^alpha*l[t]^(1-alpha)
-        c[t] = (1-l[t])/theta*(1-alpha)*y[t]/l[t]
-        k[t+1] = (1-delta)*k[t] + y[t] - c[t]
+        y[t] = z_series[t]*k[t]^α*l[t]^(1-α)
+        c[t] = (1-l[t])/θ*(1-α)*y[t]/l[t]
+        k[t+1] = (1-δ)*k[t] + y[t] - c[t]
     end
     k = k[1:(end-1)]
     i = y - c
-    w = (1-alpha).*y./l
-    R = alpha.*y./k
+    w = (1-α).*y./l
+    R = α.*y./k
     lab_prod = y./l
     Simulation = (l=l, y=y, c=c, k=k, i=i, w=w, R=R,
-                 lab_prod=lab_prod, eta_x=log.(z_series), z_indices)
+                 lab_prod=lab_prod, η_x=log.(z_series), z_indices)
     return Simulation
 end
 
 
 function impulse_response(l_mat, para, k_init; irf_length=40, scale=1.0)
 
-    @unpack rhox, stdx, P, mc, A, alpha, theta, delta, k_grid, NK, NS = para
+    @unpack ρ_x, σ_x, P, mc, A, α, θ, δ, k_grid = para
 
     # Bivariate interpolation (AR(1) shocks, so productivity can go off grid)
     L = Spline2D(k_grid, A, l_mat)
 
-    eta_x = zeros(irf_length)
-    eta_x[1] = stdx*scale
+    η_x = zeros(irf_length)
+    η_x[1] = σ_x*scale
+
     for t in 1:(irf_length-1)
-        eta_x[t+1] = rhox*eta_x[t]
+        η_x[t+1] = ρ_x*η_x[t]
     end
-    z = exp.(eta_x)
+    z = exp.(η_x)
     z_bas = ones(irf_length)
 
     function impulse(z_series)
@@ -250,15 +278,15 @@ function impulse_response(l_mat, para, k_init; irf_length=40, scale=1.0)
         for t in 1:irf_length
             # labor
             l[t] = L(k[t], z_series[t])
-            y[t] = z_series[t]*k[t]^alpha*l[t]^(1-alpha)
-            c[t] = (1-l[t])/theta*(1-alpha)*y[t]/l[t]
-            k[t+1] = (1-delta)*k[t] + y[t] - c[t]
+            y[t] = z_series[t]*k[t]^α*l[t]^(1-α)
+            c[t] = (1-l[t])/θ*(1-α)*y[t]/l[t]
+            k[t+1] = (1-δ)*k[t] + y[t] - c[t]
         end
 
         k = k[1:(end-1)]
         i = y - c
-        w = (1-alpha).*y./l
-        R = alpha.*y./k
+        w = (1-α).*y./l
+        R = α.*y./k
         lab_prod = y./l
         out = [c k l i w R y lab_prod]
         return out
@@ -274,22 +302,22 @@ function impulse_response(l_mat, para, k_init; irf_length=40, scale=1.0)
     c, k, l, i, w, R, y, lab_prod = [irf_res[:, i] for i in 1:size(irf_res, 2)]
 
     irf = (l=l, y=y, c=c, k=k, i=i, w=w, R=R,
-                 lab_prod=lab_prod, eta_x=100*log.(z))
+                 lab_prod=lab_prod, η_x=100*log.(z))
     return irf
 end
 
 
 function residual(l_pol, simul, para::Para; burn_in=200)
     capT = size(simul.c)[1]
-    resids = zeros(capT)
-    @unpack A, alpha, theta, P = para
+    @unpack A, α, θ, P = para
     @unpack k, z_indices = simul
 
     " Pre-allocate arrays "
-    basis_mat = zeros(2, size(P)[1])
+    #rhs_fun = RHS_fun_cons(l_pol, para)
     rhs_fun = RHS_fun_cons(l_pol, para)
 
     " Right-hand side of Euler equation "
+    #rhs = RHS_fun.(k, z_indices)
     rhs = rhs_fun.(k, z_indices)
     loss = 1.0 .- simul.c .* rhs
     return loss[burn_in:end]
@@ -297,28 +325,33 @@ end
    
 
 para = Para()
+
+" Calibrate "
 cal = calibrate()
-update_params(para, cal)
-@unpack NK, NS, A, k_grid, alpha = para
-
-l = ones(NK, NS)*0.33
-# iterate until policy function converges
-l_mat, l_pol, c, y, inv, w, R = solve_model_time_iter(l, para, verbose=false)
-@code_warntype solve_model_time_iter(l, para)
-@btime solve_model_time_iter($l, $para)
-
 " Solve for steady state "
 steady = steady_state(cal)
 
+update_params!(para, cal)
+@unpack NK, NS, A, k_grid, α = para
+
+# Initialize labor supply
+l = ones(NK, NS)*0.33
+
+l_mat, l_pol, c, y, inv, w, R = solve_model_time_iter(l, para, verbose=true)
+#@btime solve_model_time_iter($l, $para)
+
+
 " Simulation "
 simul = simulate_series(l_mat, para) 
-@unpack c, k, l, i, w, R, y, lab_prod, eta_x, z_indices = simul
+@unpack c, k, l, i, w, R, y, lab_prod, η_x, z_indices = simul
 
 " Log deviations from stationary mean "
 out = [log.(getfield(simul, x)./mean(getfield(simul,x))) for x in keys(steady)]
 l, c, k, y, i, w, R, lab_prod = out
 simul_dat = DataFrames.DataFrame(l=l, c=c, k=k, y=y, i=i, w=w, R=R, lab_prod=lab_prod)
 
+" Residuals "
+res = residual(l_pol, simul, para)
 
 fig, ax = subplots(1, 3, figsize=(20, 5))
 t = 250:1000
@@ -334,15 +367,14 @@ ax[2].plot(t, R[t], label="R")
 ax[2].set_title("Wage and rental rate of capital")
 ax[2].legend()
 
-ax[3].plot(t, eta_x[t], label="x")
+ax[3].plot(t, η_x[t], label="x")
 ax[3].plot(t, lab_prod[t], label="labor productivity")
 ax[3].set_title("Total factor and labor productivity")
 ax[3].legend()
 display(fig)
 PyPlot.savefig("simulations.pdf")
 
-" Residuals "
-res = residual(l_pol, simul, para)
+
 
 " Impulse responses "
 k_1 = mean(simul.k)
@@ -361,7 +393,7 @@ ax[2].plot(irf.R, label="R")
 ax[2].set_title("Wage and rental rate of capital")
 ax[2].legend()
 
-ax[3].plot(irf.eta_x, label="x")
+ax[3].plot(irf.η_x, label="x")
 ax[3].plot(irf.lab_prod, label="Labor productivity")
 ax[3].set_title("Total factor and labor productivity")
 ax[3].legend()
@@ -370,8 +402,8 @@ PyPlot.savefig("rbc_irf.pdf")
 
 " Moments from simulated data "
 # convert to Pandas DataFrame
-#simul_dat = Pandas.DataFrame(simul_dat)
-mom = moments(simul_dat)
+# simul_dat = Pandas.DataFrame(simul_dat)
+# mom = moments(simul_dat)
       
 
 
