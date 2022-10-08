@@ -10,6 +10,8 @@ using Dierckx
 using DataFrames, Pandas
 include("time_series_fun.jl")
 
+columns(M) = [view(M, :, i) for i in 1:size(M, 2)]
+
 function calibrate(r=0.03, α=0.33, l=0.33, δ=0.025, ρ_x=0.974, σ_x=0.009)
     " Convert r to quarterly "
     r_q = (1+r)^(1.0/4.0)-1.0
@@ -60,7 +62,7 @@ end
     sig::Float64 = 1e-6
     max_iter::Int64 = 1000
     NK::Int64 = 50
-    NS::Int64 = 20
+    NS::Int64 = 9
     T::Float64 = 1e5
     mc::T1 = rouwenhorst(NS, ρ_x, σ_x, 0)
     P::T2 = mc.p
@@ -123,7 +125,7 @@ function RHS_fun_cons(l_pol::Function, para::Para)
             c = (1-l_i)/θ*(1-α)*y/l_i
             #c = min(c, y)
             # update capital
-            k_p = (1-δ)*k + A[z]*k^α*l_i^(1-α) - c
+            k_p = (1-δ)*k + y - c
             for z_hat in 1:NS
                 # update labor supply via interpolation
                 l_p = l_pol(k_p, z_hat)
@@ -155,16 +157,16 @@ function labor_supply_loss(l_i, k, z, RHS_fun,  para::Para)
 end
 
 
-function solve_model_time_iter(l, para::Para; tol=1e-7, max_iter=1000, verbose=true, 
+function solve_model_time_iter(l, para::Para; tol=1e-8, max_iter=1000, verbose=true, 
                                 print_skip=25)
     # Set up loop 
     @unpack k_grid, NS, A, α, θ= para
     # Initial consumption level
-    c = similar(l)
-    c_new = similar(l)
-    for z in 1:NS
-        c[:, z] = A[z].*k_grid.^α.*l[:, z].^(1-α)
-    end
+    #c = similar(l)
+    l_new = similar(l)
+    # for z in 1:NS
+    #     c[:, z] = @. 0.6*A[z]*k_grid^α*l[:, z]^(1-α)
+    # end
 
     err = 1
     iter = 1
@@ -172,25 +174,25 @@ function solve_model_time_iter(l, para::Para; tol=1e-7, max_iter=1000, verbose=t
         # interpolate given labor grid l
         l_pol(k, z) = LinearInterpolation(k_grid, @view(l[:, z]), extrapolation_bc=Line())(k)
         RHS_fun = RHS_fun_cons(l_pol, para)
-        for (i, k) in enumerate(k_grid)
-        #@inbounds Threads.@threads for (i, k) in collect(enumerate(k_grid))
+        #for (i, k) in enumerate(k_grid)
+        @inbounds Threads.@threads for (i, k) in collect(enumerate(k_grid))
             for z in 1:NS
                 # solve for labor supply
                 l_i = find_zero(l_i -> labor_supply_loss(l_i, k, z, RHS_fun, para), (1e-10, 0.99), Bisection() )
                 #l_i = abs(h_i)/(1+abs(h_i))
-                l[i, z] = l_i
+                l_new[i, z] = l_i
                 # implied consumption
-                y = A[z]*k^α*l_i^(1-α)
-                c_new[i, z] = (1-l_i)/θ*(1-α)*y/l_i
+                #y = A[z]*k^α*l_i^(1-α)
+                #c_new[i, z] = (1-l_i)/θ*(1-α)*y/l_i
             end
         end
         #@printf(" %.2f", (mean(c)))
-        err = maximum(abs.(c_new-c)/max.(abs.(c), 1e-10))
+        err = maximum(abs.(l_new-l)/max.(abs.(l), 1e-10))
         if verbose && iter % print_skip == 0
             print("Error at iteration $iter is $err.")
         end
         iter += 1
-        c = c_new
+        l .= l_new
     
     end
 
@@ -202,11 +204,12 @@ function solve_model_time_iter(l, para::Para; tol=1e-7, max_iter=1000, verbose=t
     if verbose && (iter < max_iter)
         print("Converged in $iter iterations")
     end
-    y = similar(c)
-    inv = similar(c)
+    y = similar(l)
+    c = similar(l)
     for (i, k) in enumerate(k_grid)
         for z in 1:NS
             y[i, z] = A[z]*k^α*l[i, z]^(1-α)
+            c[i, z] = (1-l[i, z])/θ*(1-α)*y[i, z]/l[i, z]
         end
     end
 
@@ -231,7 +234,7 @@ function simulate_series(l_mat::Array, para::Para, burn_in=200, capT=10000)
     
     k = ones(capT+1)
     var = ones(capT, 3)
-    l, y, c = [ var[:,i] for i in 1:size(var, 2) ]
+    l, y, c = columns(var)
 
     for t in 1:capT
         l[t] = l_pol(k[t], z_indices[t])
@@ -335,7 +338,7 @@ update_params!(para, cal)
 @unpack NK, NS, A, k_grid, α = para
 
 # Initialize labor supply
-l = ones(NK, NS)*0.33
+l = ones(NK, NS)*0.5
 
 l_mat, l_pol, c, y, inv, w, R = solve_model_time_iter(l, para, verbose=true)
 #@btime solve_model_time_iter($l, $para)
